@@ -8,17 +8,20 @@ Usage:
     1. Copy text to clipboard
     2. Press Ctrl+Alt+T to paste by typing (useful for applications that don't accept paste)
 """
+# Standard library imports
+import atexit
+import os
+import sys
+import tempfile
+import threading
+import time
+
+# Third-party imports
 import pyperclip
 import pyautogui
 from pynput import keyboard
+from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
-from PIL import Image
-import threading
-import time
-import sys
-import os
-import tempfile
-import atexit
 
 
 # Configuration
@@ -28,9 +31,9 @@ TYPING_INTERVAL = 0  # seconds between keystrokes (0 = fastest)
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "copycat.lock")
 
 
-# Global variable to store the icon instance
-icon_instance = None
-lock_file_handle = None
+# Global variables
+ICON_INSTANCE = None
+LOCK_FILE_HANDLE = None
 
 
 # -------- Single Instance Check --------
@@ -42,38 +45,45 @@ def ensure_single_instance():
     Returns:
         bool: True if this is the only instance, False if another instance is running
     """
-    global lock_file_handle
+    global LOCK_FILE_HANDLE
     
     try:
         # Try to create and lock a file
         if sys.platform == 'win32':
             # Windows implementation
-            import msvcrt
-            lock_file_handle = open(LOCK_FILE, 'w')
             try:
-                msvcrt.locking(lock_file_handle.fileno(), msvcrt.LK_NBLCK, 1)
-                # Register cleanup function
-                atexit.register(release_lock)
-                return True
-            except IOError:
-                lock_file_handle.close()
+                import msvcrt
+                LOCK_FILE_HANDLE = open(LOCK_FILE, 'w', encoding='utf-8')
+                try:
+                    msvcrt.locking(LOCK_FILE_HANDLE.fileno(), msvcrt.LK_NBLCK, 1)
+                    # Register cleanup function
+                    atexit.register(release_lock)
+                    return True
+                except IOError:
+                    LOCK_FILE_HANDLE.close()
+                    return False
+            except ImportError:
                 return False
         else:
             # Unix implementation
-            import fcntl
-            lock_file_handle = open(LOCK_FILE, 'w')
             try:
-                fcntl.flock(lock_file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                # Register cleanup function
-                atexit.register(release_lock)
-                return True
-            except IOError:
-                lock_file_handle.close()
+                import fcntl
+                with open(LOCK_FILE, 'w', encoding='utf-8') as lock_file:
+                    LOCK_FILE_HANDLE = lock_file
+                    try:
+                        fcntl.flock(LOCK_FILE_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        # Register cleanup function
+                        atexit.register(release_lock)
+                        return True
+                    except IOError:
+                        LOCK_FILE_HANDLE.close()
+                        return False
+            except ImportError:
                 return False
-    except:
+    except Exception:
         # If any error occurs, assume another instance is running
-        if lock_file_handle:
-            lock_file_handle.close()
+        if LOCK_FILE_HANDLE:
+            LOCK_FILE_HANDLE.close()
         return False
 
 
@@ -81,29 +91,35 @@ def release_lock():
     """
     Releases the lock file when the application exits.
     """
-    global lock_file_handle
-    if lock_file_handle:
+    global LOCK_FILE_HANDLE
+    if LOCK_FILE_HANDLE:
         try:
             if sys.platform == 'win32':
                 # Windows implementation
-                import msvcrt
                 try:
-                    msvcrt.locking(lock_file_handle.fileno(), msvcrt.LK_UNLCK, 1)
-                except:
+                    import msvcrt
+                    try:
+                        msvcrt.locking(LOCK_FILE_HANDLE.fileno(), msvcrt.LK_UNLCK, 1)
+                    except Exception:
+                        pass
+                except ImportError:
                     pass
             else:
                 # Unix implementation
-                import fcntl
                 try:
-                    fcntl.flock(lock_file_handle, fcntl.LOCK_UN)
-                except:
+                    import fcntl
+                    try:
+                        fcntl.flock(LOCK_FILE_HANDLE, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                except ImportError:
                     pass
-            lock_file_handle.close()
+            LOCK_FILE_HANDLE.close()
             try:
                 os.remove(LOCK_FILE)
-            except:
+            except Exception:
                 pass
-        except:
+        except Exception:
             pass
 
 
@@ -120,7 +136,7 @@ def type_clipboard_text():
         if not text:
             print("Clipboard is empty")
             return
-            
+        
         print("🐱 CopyCat typing clipboard...")
         
         # Split text by newlines and type each line with Shift+Enter instead of regular Enter
@@ -132,11 +148,12 @@ def type_clipboard_text():
             # If not the last line, press Shift+Enter instead of regular Enter
             if i < len(lines) - 1:
                 pyautogui.hotkey('shift', 'enter')
-                
+        
         print("✓ Clipboard contents typed successfully")
     except Exception as e:
         error_msg = f"Error typing clipboard: {e}"
         print(error_msg)
+
 
 # -------- Hotkey Setup --------
 def start_hotkey_listener():
@@ -161,8 +178,9 @@ def start_hotkey_listener():
     ) as l:
         l.join()
 
+
 # -------- Tray Icon Menu --------
-def quit_app(icon, item):
+def quit_app(icon, _item):
     """
     Quits the CopyCat application.
     """
@@ -170,28 +188,27 @@ def quit_app(icon, item):
     if icon:
         try:
             icon.stop()
-        except:
+        except Exception:
             pass
     # Use os._exit instead of sys.exit to avoid the SystemExit exception
-    import os
-    os._exit(0)
+    sys.exit(0)
+
 
 def run_tray():
     """
     Runs the system tray icon.
     """
-    global icon_instance
+    global ICON_INSTANCE
     
     try:
         icon_path = os.path.join(os.path.dirname(__file__), "copycat_icon.ico")
         icon_image = Image.open(icon_path)
-    except:
+    except Exception:
         # Create a better fallback icon (stylized "CC" for CopyCat)
         icon_size = (64, 64)
         icon_image = Image.new("RGBA", icon_size, color=(0, 0, 0, 0))
         
         # Draw a circular background
-        from PIL import ImageDraw
         draw = ImageDraw.Draw(icon_image)
         
         # Background circle
@@ -204,40 +221,35 @@ def run_tray():
         draw.ellipse([(28, 28), (52, 60)], fill=(255, 255, 255))
         draw.rectangle([(28, 40), (40, 60)], fill=(70, 130, 180))
     
-    icon_instance = Icon("CopyCat", icon_image, menu=Menu(MenuItem('Quit CopyCat', quit_app)))
+    ICON_INSTANCE = Icon("CopyCat", icon_image, menu=Menu(MenuItem('Quit CopyCat', quit_app)))
     
     print("🐱 CopyCat is running in the system tray")
     
     try:
-        icon_instance.run()
+        ICON_INSTANCE.run()
     except KeyboardInterrupt:
         # Handle Ctrl+C gracefully
         print("👋 Exiting CopyCat due to keyboard interrupt...")
-        quit_app(icon_instance, None)
+        quit_app(ICON_INSTANCE, None)
     except Exception as e:
         print(f"Error in tray icon: {e}")
         # Make sure to clean up
-        if icon_instance:
+        if ICON_INSTANCE:
             try:
-                icon_instance.stop()
-            except:
+                ICON_INSTANCE.stop()
+            except Exception:
                 pass
-        import os
-        os._exit(1)
+        sys.exit(1)
 
 
 # -------- Main Entrypoint --------
-"""
-Main entry point of the CopyCat application.
-"""
 if __name__ == "__main__":
     # Check for existing instance first, before creating any resources
     if not ensure_single_instance():
         print("🐱 CopyCat is already running! Exiting this instance.")
         # Exit immediately without creating any resources
-        import os
-        os._exit(0)
-        
+        sys.exit(0)
+    
     # If we get here, we're the only instance
     print(f"🐱 CopyCat is running in the tray. Press {HOTKEY} to type clipboard.")
     threading.Thread(target=start_hotkey_listener, daemon=True).start()
